@@ -1,4 +1,4 @@
-ticker,name,sector,corr_bucket,live_eligible,notes
+﻿ticker,name,sector,corr_bucket,live_eligible,notes
 NVDA,NVIDIA,Semiconductors,semis,Y,AI半導体の主力。semisバケットは相互相関が非常に高い
 AMD,Advanced Micro Devices,Semiconductors,semis,Y,semis
 AVGO,Broadcom,Semiconductors,semis,Y,semis
@@ -21,7 +21,7 @@ ZS,Zscaler,Cybersecurity,cyber,Y,サイバー。高ボラ
 V,Visa,Fintech/Payments,payments,Y,決済インフラ(ディフェンシブ寄り)
 MA,Mastercard,Fintech/Payments,payments,Y,決済インフラ
 PYPL,PayPal,Fintech/Payments,payments,Y,フィンテック
-SQ,Block,Fintech/Payments,payments,Y,フィンテック。高ボラ
+XYZ,Block,Fintech/Payments,payments,Y,フィンテック。高ボラ
 SHOP,Shopify,Fintech/Payments,payments,Y,EC基盤。高ボラ
 TSLA,Tesla,EV/Clean Energy,ev_clean,Y,EV。単独材料多く高ボラ
 RIVN,Rivian,EV/Clean Energy,ev_clean,Y,EV小型。非常に高ボラ
