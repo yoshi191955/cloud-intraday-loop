@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Claude予測ログ 監視ダッシュボード</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.0/dist/chart.umd.js" integrity="sha384-iU8HYtnGQ8Cy4zl7gbNMOhsDTTKX02BTXptVP/vqAWIaTfM7isw76iyZCsjL2eVi" crossorigin="anonymous"></script>
+<style>
+:root{color-scheme:light}
+*{box-sizing:border-box}
+body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Hiragino Kaku Gothic ProN","Noto Sans JP",sans-serif;background:#f6f7f9;color:#1c2430;font-size:14px;line-height:1.5}
+.wrap{max-width:1100px;margin:0 auto;padding:18px}
+h1{font-size:19px;margin:0 0 2px}
+h2{font-size:15px;margin:22px 0 8px;border-left:4px solid #3b6cf6;padding-left:8px}
+.sub{color:#5b6675;font-size:12px}
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;margin-top:12px}
+.card{background:#fff;border:1px solid #e4e8ee;border-radius:10px;padding:12px}
+.card .k{font-size:11px;color:#6b7684;letter-spacing:.02em}
+.card .v{font-size:22px;font-weight:700;margin-top:3px}
+.card .n{font-size:11px;color:#8a94a2;margin-top:2px}
+.pos{color:#12855b}.neg{color:#c0392b}.warnc{color:#b7791f}
+.alert{border-radius:10px;padding:11px 13px;margin:8px 0;font-size:13px;border:1px solid}
+.a-warn{background:#fff8e6;border-color:#f0d089;color:#7a5b12}
+.a-bad{background:#fdecea;border-color:#f0b3ab;color:#8a2b1f}
+.a-ok{background:#e9f7ef;border-color:#a6ddbf;color:#116843}
+.a-info{background:#eef3fe;border-color:#bcd0f7;color:#274a9e}
+table{width:100%;border-collapse:collapse;background:#fff;border:1px solid #e4e8ee;border-radius:10px;overflow:hidden}
+th,td{padding:7px 9px;text-align:right;border-bottom:1px solid #eef1f5;font-variant-numeric:tabular-nums}
+th{background:#f0f3f7;cursor:pointer;user-select:none;font-size:12px;color:#43506}
+th:first-child,td:first-child{text-align:left}
+tr:last-child td{border-bottom:none}
+.chartbox{background:#fff;border:1px solid #e4e8ee;border-radius:10px;padding:10px;height:280px}
+.foot{color:#8a94a2;font-size:11px;margin-top:18px}
+.pill{display:inline-block;padding:1px 7px;border-radius:20px;font-size:11px;background:#eef1f5;color:#55606e}
+code{background:#eef1f5;padding:1px 4px;border-radius:4px}
+.loading{padding:40px;text-align:center;color:#6b7684}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Claude予測ログ(Intraday) ― クラウド監視ダッシュボード</h1>
+  <div class="sub" id="src">リポジトリの predictions_intraday.csv を読み込み中…</div>
+  <div id="app"><div class="loading">データ取得中…（右上の Reload で最新化できます）</div></div>
+  <div class="foot">
+    ※本ダッシュボードは検証用の名目（ペーパー）計算です。投資助言ではありません。
+    コスト後実利益 <code>net_return_pct</code> の符号を「本当の勝ち」として評価しています。
+    数値は機械的モメンタム(2h horizon)のペーパー予測。往復0.5%+利益25%課税を計上。実弾は未反映。
+  </div>
+</div>
+<script>
+const CONF={5:0.13,4:0.10,3:0.067,2:0.04,1:0};
+const MIN_TRADES=8;  // 多重比較を避けるための最低サンプル
+
+function num(x){ if(x===undefined||x===null) return null; const s=String(x).trim().replace('+',''); if(s===''||s==='NA') return null; const v=parseFloat(s); return isNaN(v)?null:v; }
+
+function parseCSV(text){
+  const rows=[]; let i=0,f='',row=[],q=false;
+  while(i<text.length){
+    const c=text[i];
+    if(q){
+      if(c==='"'){ if(text[i+1]==='"'){f+='"';i+=2;continue;} q=false;i++;continue; }
+      f+=c;i++;continue;
+    }
+    if(c==='"'){q=true;i++;continue;}
+    if(c===','){row.push(f);f='';i++;continue;}
+    if(c==='\r'){i++;continue;}
+    if(c==='\n'){row.push(f);rows.push(row);row=[];f='';i++;continue;}
+    f+=c;i++;
+  }
+  if(f.length||row.length){row.push(f);rows.push(row);}
+  const head=rows.shift();
+  return rows.filter(r=>r.length>1).map(r=>{const o={};head.forEach((h,j)=>o[h.trim()]=r[j]);return o;});
+}
+
+function utf8FromBase64(b64){
+  const bin=atob(b64); const bytes=new Uint8Array(bin.length);
+  for(let k=0;k<bin.length;k++) bytes[k]=bin.charCodeAt(k);
+  return new TextDecoder('utf-8').decode(bytes);
+}
+
+async function call(name,args){
+  const r=await window.cowork.callMcpTool(name,args);
+  if(r&&r.isError) throw new Error('tool error: '+name);
+  let obj=r.structuredContent;
+  if(!obj && r.content && r.content[0] && r.content[0].text){ obj=JSON.parse(r.content[0].text); }
+  return obj;
+}
+
+function mean(a){return a.length?a.reduce((x,y)=>x+y,0)/a.length:0;}
+function stdev(a){if(a.length<2)return 0;const m=mean(a);return Math.sqrt(a.reduce((s,x)=>s+(x-m)*(x-m),0)/(a.length-1));}
+
+function fmtPct(x,d=2){return (x>=0?'+':'')+x.toFixed(d)+'%';}
+function cls(x){return x>0?'pos':(x<0?'neg':'');}
+
+function compute(rows){
+  const trades=rows.filter(r=>(r.direction==='up'||r.direction==='down') && num(r.net_return_pct)!==null);
+  const pendingDir=rows.filter(r=>(r.direction==='up'||r.direction==='down') && num(r.net_return_pct)===null).length;
+  const flat=rows.filter(r=>r.direction==='flat').length;
+  trades.sort((a,b)=>(a.session_date+a.pred_id).localeCompare(b.session_date+b.pred_id));
+  const net=trades.map(r=>num(r.net_return_pct));
+  const ret=trades.map(r=>num(r.return_pct)).filter(x=>x!==null);
+  const hit=trades.map(r=>String(r.hit).toUpperCase()==='TRUE');
+  const hitRate=hit.length?hit.filter(Boolean).length/hit.length:0;
+  const netPos=net.filter(x=>x>0).length;
+  const mNet=mean(net), sd=stdev(net), se=sd/Math.sqrt(net.length||1), t=se?mNet/se:0;
+  const winners=net.filter(x=>x>0), losers=net.filter(x=>x<0);
+  const payoff=losers.length&&winners.length?mean(winners)/Math.abs(mean(losers)):0;
+  // sessions & clustering
+  const sess={}; trades.forEach(r=>sess[r.session_date]=(sess[r.session_date]||0)+1);
+  const nSess=Object.keys(sess).length, maxPerDay=Math.max(0,...Object.values(sess));
+  // halves
+  const mid=Math.floor(trades.length/2);
+  const h1=net.slice(0,mid), h2=net.slice(mid);
+  const h1hit=hit.slice(0,mid), h2hit=hit.slice(mid);
+  // equity
+  let bal=1e6,peak=1e6,maxdd=0; const curve=[]; 
+  trades.forEach(r=>{const cf=CONF[parseInt(num(r.confidence))]||0; bal*=(1+cf*num(r.net_return_pct)/100); peak=Math.max(peak,bal); maxdd=Math.min(maxdd,(bal-peak)/peak); curve.push({x:r.pred_id,y:bal});});
+  const totRet=(bal/1e6-1)*100;
+  // per ticker
+  const byT={};
+  trades.forEach(r=>{const k=r.ticker;(byT[k]=byT[k]||[]).push(r);});
+  const tickers=Object.entries(byT).map(([tk,arr])=>{
+    const nn=arr.map(r=>num(r.net_return_pct));
+    const hh=arr.map(r=>String(r.hit).toUpperCase()==='TRUE');
+    const half=Math.floor(arr.length/2);
+    const secondHalf=nn.slice(half);
+    return {ticker:tk,n:arr.length,hit:hh.filter(Boolean).length/arr.length,
+            meanNet:mean(nn),sumNet:nn.reduce((a,b)=>a+b,0),
+            secondHalfNet:secondHalf.length?mean(secondHalf):mean(nn)};
+  }).sort((a,b)=>b.n-a.n);
+  const candidates=tickers.filter(t=>t.n>=MIN_TRADES && t.meanNet>0 && t.secondHalfNet>0);
+  return {trades,pendingDir,flat,net,ret,hitRate,netPos,mNet,t,payoff,winners,losers,
+          nSess,maxPerDay,h1:mean(h1),h2:mean(h2),h1hit:h1hit.filter(Boolean).length/(h1hit.length||1),
+          h2hit:h2hit.filter(Boolean).length/(h2hit.length||1),curve,totRet,maxdd,tickers,candidates};
+}
+
+function card(k,v,vc,n){return `<div class="card"><div class="k">${k}</div><div class="v ${vc||''}">${v}</div>${n?`<div class="n">${n}</div>`:''}</div>`;}
+
+let chartRef=null;
+function render(m,fileMeta){
+  document.getElementById('src').innerHTML=
+    `データ元: <b>${fileMeta.title}</b> ・ 作成 ${new Date(fileMeta.createdTime).toLocaleString('ja-JP')} `+
+    `<span class="pill">採点済み ${m.trades.length} / 未採点(directional) ${m.pendingDir} / flat ${m.flat}</span>`;
+
+  let html='';
+  // KPI
+  html+='<div class="cards">';
+  html+=card('採点済みトレード',m.trades.length,'',`独立セッション ${m.nSess}日`);
+  html+=card('方向的中率',(m.hitRate*100).toFixed(1)+'%');
+  html+=card('コスト後プラス率',((m.netPos/(m.net.length||1))*100).toFixed(1)+'%',(m.netPos/(m.net.length||1))>0.5?'pos':'');
+  html+=card('1トレード純益(平均)',fmtPct(m.mNet),cls(m.mNet),'対ポジション');
+  html+=card('期待値 t値',m.t.toFixed(2),Math.abs(m.t)>2?'pos':'warnc',(m.nSess<20?'※独立標本が少なく過大評価':'目安|t|>2'));
+  html+=card('ペイオフ比',m.payoff.toFixed(2),m.payoff>1?'pos':'neg','平均勝/平均負');
+  html+=card('近似複利リターン',fmtPct(m.totRet),cls(m.totRet),'conf連動サイズ');
+  html+=card('近似最大DD',(m.maxdd*100).toFixed(2)+'%','neg');
+  html+='</div>';
+
+  // alerts
+  html+='<h2>アラート / 健全性チェック</h2>';
+  const tradesPerSess=m.nSess?(m.trades.length/m.nSess):0;
+  if(m.nSess<20){
+    html+=`<div class="alert a-warn"><b>標本不足・集中の警告:</b> 採点済み ${m.trades.length}件だが独立セッションは <b>${m.nSess}日</b>（1日最大 ${m.maxPerDay}件, 平均 ${tradesPerSess.toFixed(1)}件/日）。同日内トレードは相関するため、実質の独立情報はトレード数より遥かに少ない。t値は割り引いて解釈すること。目安として<b>30セッション以上／独立100トレード以上</b>を貯めてから判断。</div>`;
+  } else {
+    html+=`<div class="alert a-ok">独立セッション ${m.nSess}日。標本の広がりは最低ラインを満たしつつある。</div>`;
+  }
+  if(m.h2<m.h1-0.001){
+    html+=`<div class="alert a-bad"><b>後半劣化:</b> 前半 net平均 ${fmtPct(m.h1)}・的中 ${(m.h1hit*100).toFixed(0)}% → 後半 net平均 ${fmtPct(m.h2)}・的中 ${(m.h2hit*100).toFixed(0)}%。初期の追い風/幸運の可能性。継続監視。</div>`;
+  } else {
+    html+=`<div class="alert a-ok">前半→後半で劣化なし（前半 ${fmtPct(m.h1)} → 後半 ${fmtPct(m.h2)}）。</div>`;
+  }
+  html+=`<div class="alert a-info"><b>ベータ注意:</b> 上げ相場では "up" が当たっても実力とは限りません。各銘柄の予測は将来「その銘柄を持ち続けた場合」と比較し、タイミングの付加価値で評価してください（buy&hold比較の列は実弾データ蓄積後に追加）。</div>`;
+
+  // equity chart
+  html+='<h2>近似エクイティ曲線（初期100万・逐次複利・同時性無視の近似）</h2>';
+  html+='<div class="chartbox"><canvas id="eq"></canvas></div>';
+
+  // ticker table
+  html+='<h2>銘柄別ビュー（会社ごと・自動集計）</h2>';
+  html+='<div class="sub">列見出しをクリックで並べ替え。正本は1枚の長形式ログ、ここは自動派生ビュー。</div>';
+  html+=tableHTML(m.tickers);
+
+  // candidates
+  html+='<h2>5社ライブ候補の妥当性チェック</h2>';
+  if(m.candidates.length===0){
+    html+=`<div class="alert a-warn"><b>まだ実弾候補なし。</b> 「最低${MIN_TRADES}トレード かつ 平均net>0 かつ 後半net>0」を満たす銘柄はゼロ。現状は1〜2トレードの銘柄が大半で、上位を選ぶと<b>偶然の勝者を拾う（多重比較）</b>リスクが高い。予測を貯めてから選抜すること。</div>`;
+  } else {
+    html+=`<div class="alert a-info">暫定候補（最低${MIN_TRADES}トレード・平均net>0・後半net>0）。実弾化はさらにアウトオブサンプル確認と1バケット最大1社の分散ルール適用後に。</div>`;
+    html+=tableHTML(m.candidates);
+  }
+
+  document.getElementById('app').innerHTML=html;
+  drawChart(m.curve);
+  attachSort();
+}
+
+function tableHTML(arr){
+  let h='<table><thead><tr>'+
+    '<th data-k="ticker">ticker</th><th data-k="n">#トレード</th><th data-k="hit">的中%</th>'+
+    '<th data-k="meanNet">net平均%</th><th data-k="sumNet">net合計%</th><th data-k="secondHalfNet">後半net%</th>'+
+    '</tr></thead><tbody>';
+  arr.forEach(t=>{
+    h+=`<tr><td>${t.ticker}</td><td>${t.n}</td><td>${(t.hit*100).toFixed(0)}%</td>`+
+       `<td class="${cls(t.meanNet)}">${fmtPct(t.meanNet)}</td>`+
+       `<td class="${cls(t.sumNet)}">${fmtPct(t.sumNet)}</td>`+
+       `<td class="${cls(t.secondHalfNet)}">${fmtPct(t.secondHalfNet)}</td></tr>`;
+  });
+  return h+'</tbody></table>';
+}
+
+function attachSort(){
+  document.querySelectorAll('th[data-k]').forEach(th=>{
+    th.onclick=()=>{
+      const tb=th.closest('table').querySelector('tbody');
+      const k=th.dataset.k, idx=[...th.parentNode.children].indexOf(th);
+      const rows=[...tb.rows];
+      const asc=th._asc=!th._asc;
+      rows.sort((a,b)=>{
+        const va=a.cells[idx].textContent.replace(/[%+]/g,''), vb=b.cells[idx].textContent.replace(/[%+]/g,'');
+        const na=parseFloat(va),nb=parseFloat(vb);
+        if(!isNaN(na)&&!isNaN(nb)) return asc?na-nb:nb-na;
+        return asc?va.localeCompare(vb):vb.localeCompare(va);
+      });
+      rows.forEach(r=>tb.appendChild(r));
+    };
+  });
+}
+
+function drawChart(curve){
+  const ctx=document.getElementById('eq'); if(!ctx) return;
+  if(chartRef) chartRef.destroy();
+  chartRef=new Chart(ctx,{type:'line',
+    data:{labels:curve.map(p=>p.x),datasets:[{label:'近似残高',data:curve.map(p=>p.y),
+      borderColor:'#3b6cf6',backgroundColor:'rgba(59,108,246,.08)',fill:true,pointRadius:0,tension:.15,borderWidth:2}]},
+    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},
+      scales:{x:{ticks:{maxTicksLimit:8,color:'#8a94a2'},grid:{display:false}},
+              y:{ticks:{color:'#8a94a2',callback:v=>(v/1e6).toFixed(3)+'M'},grid:{color:'#eef1f5'}}}}});
+}
+
+async function main(){
+  try{
+    const res=await fetch('./predictions_intraday.csv?_='+Date.now());
+    if(!res.ok) throw new Error('CSV取得失敗 '+res.status);
+    const csv=await res.text();
+    const rows=parseCSV(csv);
+    if(!rows.length){document.getElementById('app').innerHTML='<div class="alert a-info">まだ予測データがありません。GitHub Actions が市場時間に走ると蓄積されます。</div>';document.getElementById('src').textContent='データ元: docs/predictions_intraday.csv（まだ空）';return;}
+    render(compute(rows),{title:'predictions_intraday.csv',createdTime:new Date().toISOString()});
+  }catch(e){
+    document.getElementById('app').innerHTML='<div class="alert a-bad">読み込みエラー: '+(e&&e.message||e)+'</div>';
+  }
+}
+main();
+</script>
+</body>
+</html>

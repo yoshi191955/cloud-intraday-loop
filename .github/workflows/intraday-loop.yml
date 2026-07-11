@@ -1,0 +1,43 @@
+name: intraday-loop
+
+# 毎時（米国市場時間帯 13:30–20:30 UTC ≈ 09:30–16:30 ET）平日に起動。
+# ※ GitHub の cron は UTC。市場時間の最終判定はスクリプト側でも行う（DST差を吸収）。
+on:
+  schedule:
+    - cron: "30 13-20 * * 1-5"
+  workflow_dispatch: {}   # 手動実行も可
+
+permissions:
+  contents: write         # ログCSVをコミットするため
+
+concurrency:
+  group: intraday-loop
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install deps
+        run: pip install -r requirements.txt
+
+      - name: Run intraday loop
+        run: python intraday_loop.py
+
+      - name: Commit updated log
+        run: |
+          git config user.name  "intraday-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add docs/predictions_intraday.csv
+          if git diff --staged --quiet; then
+            echo "no changes"
+          else
+            git commit -m "intraday log update: $(date -u +%FT%TZ)"
+            git push
+          fi
