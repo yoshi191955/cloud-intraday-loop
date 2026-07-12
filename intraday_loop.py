@@ -41,20 +41,21 @@ ET = ZoneInfo("America/New_York")
 
 
 def load_watchlist():
-    with open(WATCH) as f:
+    # utf-8-sig: BOM付き/無し どちらのUTF-8でも読める（PowerShellはBOM付きで書くため必須）
+    with open(WATCH, encoding="utf-8-sig") as f:
         return [r["ticker"] for r in csv.DictReader(f)]
 
 
 def read_log():
     if not os.path.exists(LOG):
         return []
-    with open(LOG, newline="") as f:
+    with open(LOG, newline="", encoding="utf-8-sig") as f:
         return list(csv.DictReader(f))
 
 
 def write_log(rows):
     os.makedirs(os.path.dirname(LOG), exist_ok=True)
-    with open(LOG, "w", newline="") as f:
+    with open(LOG, "w", newline="", encoding="utf-8") as f:  # BOM無しで書き戻す
         w = csv.DictWriter(f, fieldnames=COLS)
         w.writeheader()
         for r in rows:
