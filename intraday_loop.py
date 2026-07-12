@@ -114,6 +114,18 @@ def market_open(now: dt.datetime) -> bool:
     return o <= e <= c
 
 
+def horizon_fits_before_close(now: dt.datetime) -> bool:
+    """
+    引け(16:00 ET)まで HORIZON(2時間) 以上残っている時だけ予測する。
+    残り2時間を切ってから予測すると、満期がその日のうちに来ず、
+    翌朝の寄り（オーバーナイトのギャップ込み）で採点されてしまい、
+    「2時間の値動き」を測ったことにならない（＝検証が汚れる）。
+    """
+    e = now.astimezone(ET)
+    close = e.replace(hour=16, minute=0, second=0, microsecond=0)
+    return e + HORIZON <= close
+
+
 def main():
     now = now_utc()
     tickers = load_watchlist()
@@ -121,8 +133,9 @@ def main():
     seen = {r["pred_id"] for r in rows}
     bars = fetch_bars(tickers)
 
-    # ── 2) 予測（市場時間かつ新鮮なバーがある時のみ） ──
-    if market_open(now):
+    # ── 2) 予測（市場時間 かつ 引けまで2h以上 かつ 新鮮なバーがある時のみ） ──
+    can_predict = market_open(now) and horizon_fits_before_close(now)
+    if can_predict:
         hour_key = now.strftime("%Y%m%d%H")
         for t in tickers:
             df = bars.get(t)
@@ -187,7 +200,7 @@ def main():
     closed = sum(1 for r in rows if r["status"] == "closed")
     print(f"[intraday_loop] rows={len(rows)} closed={closed} "
           f"open={sum(1 for r in rows if r['status']=='open')} "
-          f"market_open={market_open(now)} bars={len(bars)}")
+          f"market_open={market_open(now)} can_predict={can_predict} bars={len(bars)}")
 
 
 if __name__ == "__main__":
